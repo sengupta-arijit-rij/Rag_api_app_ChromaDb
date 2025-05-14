@@ -21,11 +21,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("RAGEngine")
 
+# Important: This ensures OpenAI isn't used by default
+Settings.embed_model = None
+Settings.llm = None
+
 class RAGEngine:
     def __init__(self, 
              base_dir: str = os.getcwd(), 
              ollama_base_url: str = "http://localhost:11434",
-             ollama_model: str = "llama3:latest",  # Add model parameter
+             ollama_model: str = "llama3:latest",  
              chroma_persist_dir: str = None,
              document_dir: str = None):
         
@@ -34,6 +38,8 @@ class RAGEngine:
         self.ollama_base_url = ollama_base_url
         self.ollama_model = ollama_model
         self.index = None
+        self.embed_model = None
+        self.llm = None
         
         # Set ChromaDB persistence directory, default to a subdirectory in base_dir
         self.chroma_persist_dir = chroma_persist_dir or os.path.join(base_dir, "chroma_db")
@@ -70,12 +76,15 @@ class RAGEngine:
             response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=5)
             response.raise_for_status()
             
-            # Check if llama3 model is available
+            # Check if the specified model is available
             models = response.json().get("models", [])
             model_names = [model.get("name") for model in models]
             
-            if "llama3" not in model_names:
-                logger.warning("llama3 model is not available in Ollama. Available models: " + ", ".join(model_names))
+            # Extract base model name for comparison (e.g., "llama3" from "llama3:latest")
+            base_model = self.ollama_model.split(':')[0] if ':' in self.ollama_model else self.ollama_model
+            
+            if not any(base_model in model for model in model_names):
+                logger.warning(f"{base_model} model is not available in Ollama. Available models: " + ", ".join(model_names))
                 return False
                 
             return True
@@ -87,16 +96,27 @@ class RAGEngine:
         """Setup Ollama embedding and LLM with error handling"""
         try:
             # Setup embedding model
-            ollama_embedding = OllamaEmbedding(
-                model_name="llama3:latest",
+            self.embed_model = OllamaEmbedding(
+                model_name=self.ollama_model,
                 base_url=self.ollama_base_url,
+                embed_batch_size=10,  # Reduce batch size for stability
                 ollama_additional_kwargs={"mirostat": 0},
             )
-            Settings.embed_model = ollama_embedding
+            
+            # Important: Set the embedding model in Settings
+            Settings.embed_model = self.embed_model
             
             # Setup LLM
-            Settings.llm = Ollama(model="llama3:latest", base_url=self.ollama_base_url)
-            logger.info("Successfully set up Ollama embedding and LLM")
+            self.llm = Ollama(
+                model=self.ollama_model, 
+                base_url=self.ollama_base_url,
+                request_timeout=120.0  # Increase timeout for longer responses
+            )
+            
+            # Important: Set the LLM model in Settings
+            Settings.llm = self.llm
+            
+            logger.info(f"Successfully set up Ollama embedding and LLM using model: {self.ollama_model}")
         except Exception as e:
             logger.error(f"Failed to setup Ollama models: {str(e)}")
             raise RuntimeError(f"Failed to initialize Ollama models: {str(e)}")
@@ -160,7 +180,8 @@ class RAGEngine:
                 # Load index from the vector store
                 self.index = VectorStoreIndex.from_vector_store(
                     vector_store=vector_store,
-                    storage_context=storage_context
+                    storage_context=storage_context,
+                    embed_model=self.embed_model  # Explicitly pass the embedding model
                 )
                 logger.info("Successfully loaded existing index from ChromaDB")
                 return True
@@ -216,11 +237,11 @@ class RAGEngine:
             vector_store = ChromaVectorStore(chroma_collection=collection)
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             
-            # Create index without requiring the embed_model attribute
-            # Use the Settings.embed_model instead which is set in _setup_ollama method
+            # Create index with the explicit embedding model
             self.index = VectorStoreIndex.from_documents(
                 documents=documents,
-                storage_context=storage_context
+                storage_context=storage_context,
+                embed_model=self.embed_model  # Explicitly pass the embedding model
             )
             logger.info("Index created and stored in ChromaDB successfully")
             
@@ -307,7 +328,9 @@ class RAGEngine:
             text_qa_template=self.text_qa_template,
             refine_template=self.refine_template,
             similarity_top_k=2,
-            chat_memory=memory
+            chat_memory=memory,
+            llm=self.llm,  # Explicitly use the configured LLM
+            embed_model=self.embed_model  # Explicitly use the configured embedding model
         )
         
         # Get response
