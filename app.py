@@ -221,7 +221,7 @@ def chat():
         "session_id": "optional-session-id" 
     }
     
-    Returns the formatted response directly, not in JSON format.
+    Returns a JSON response with the answer and session information.
     """
     try:
         # Check if RAG engine is initialized
@@ -261,6 +261,36 @@ def chat():
                 except Exception as e:
                     logger.error(f"Failed to create chat session: {str(e)}")
                     return jsonify({"error": f"Failed to create chat session: {str(e)}"}), 500
+        
+        # Exit command (optional)
+        if message.lower() == 'exit':
+            return jsonify({
+                "answer": "Thank you for reaching out. Feel free to visit us again. Bye!",
+                "session_id": session_id
+            })
+        
+        # Process question with conversation context
+        try:
+            result = rag_engine.answer_question(message, session_id)
+            # Return the result as JSON
+            return jsonify(result)
+        except ValueError as e:
+            logger.error(f"Value error processing message: {str(e)}")
+            return jsonify({
+                "error": str(e),
+                "session_id": session_id
+            }), 400
+        except Exception as e:
+            logger.error(f"Failed to process message: {str(e)}")
+            return jsonify({
+                "error": "Sorry, I encountered an error while processing your message. Please try again later.",
+                "session_id": session_id
+            }), 500
+    except Exception as e:
+        logger.error(f"Unexpected error in chat endpoint: {str(e)}")
+        return jsonify({
+            "error": "Sorry, I encountered an unexpected error. Please try again later."
+        }), 500
         
         # Exit command (optional)
         if message.lower() == 'exit':
