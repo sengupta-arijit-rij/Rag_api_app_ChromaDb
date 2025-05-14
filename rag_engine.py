@@ -441,11 +441,38 @@ class RAGEngine:
                     'error': True
                 }
             
+            # Modified version of the memory update code in rag_engine.py
             # Store the interaction in memory if available
             if memory:
                 try:
                     if hasattr(response, 'response'):
-                        memory.put(question, response.response)
+                        # Use a more compatible approach to update memory
+                        # This checks for the method signature before calling
+                        if hasattr(memory, 'put'):
+                            # Check if the method takes 2 or 3 arguments
+                            import inspect
+                            put_sig = inspect.signature(memory.put)
+                            if len(put_sig.parameters) == 2:
+                                # The 2-parameter version expects (question, answer)
+                                memory.put(question, response.response)
+                            elif len(put_sig.parameters) == 3:
+                                # The 3-parameter version might expect (role, question, answer)
+                                # or some other combination - let's adapt to common patterns
+                                try:
+                                    memory.put("human", question)
+                                    memory.put("assistant", response.response)
+                                except Exception as e2:
+                                    logger.warning(f"Alternative memory update approach failed: {str(e2)}")
+                                    # Final fallback to handle any version
+                                    try:
+                                        # Add message directly to chat history
+                                        from llama_index.core.memory import ChatMessage
+                                        chat_history = memory.get_chat_history()
+                                        chat_history.messages.append(ChatMessage(role="human", content=question))
+                                        chat_history.messages.append(ChatMessage(role="assistant", content=response.response))
+                                    except Exception as e3:
+                                        logger.warning(f"Direct chat history update failed: {str(e3)}")
+                        
                         if not is_new_session:
                             logger.info(f"Updated chat memory for session: {session_id}")
                 except Exception as e:
