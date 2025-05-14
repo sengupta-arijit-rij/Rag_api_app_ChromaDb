@@ -71,7 +71,7 @@ class RAGEngine:
             self._load_index()
     
     def _verify_ollama_connection(self) -> bool:
-        """Verify connection to Ollama server"""
+        """Verify connection to Ollama server with improved model checking and fallback"""
         try:
             response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=5)
             response.raise_for_status()
@@ -80,20 +80,57 @@ class RAGEngine:
             models = response.json().get("models", [])
             model_names = [model.get("name") for model in models]
             
+            if not model_names:
+                logger.warning("No models found in Ollama server response")
+                return False
+                
             # Extract base model name for comparison (e.g., "llama3" from "llama3:latest")
             base_model = self.ollama_model.split(':')[0] if ':' in self.ollama_model else self.ollama_model
             
-            if not any(base_model in model for model in model_names):
-                logger.warning(f"{base_model} model is not available in Ollama. Available models: " + ", ".join(model_names))
+            # More flexible model matching - check if any available model starts with our base model name
+            if not any(model.lower().startswith(base_model.lower()) for model in model_names):
+                logger.warning(f"Warning: Model {self.ollama_model} not found in available models: {', '.join(model_names)}")
+                
+                # Try to select a reasonable fallback model
+                if model_names:
+                    # Look for common models in order of preference
+                    for preferred_model in ["llama3", "llama2", "mistral", "gemma"]:
+                        for model in model_names:
+                            if preferred_model.lower() in model.lower():
+                                self.ollama_model = model
+                                logger.info(f"Using fallback model: {self.ollama_model}")
+                                return True
+                    
+                    # If no preferred model found, use the first available one
+                    self.ollama_model = model_names[0]
+                    logger.info(f"Using first available model: {self.ollama_model}")
+                    return True
+                    
                 return False
                 
+            # Found exact or compatible model
+            # Find the best matching model from available models
+            exact_match = next((model for model in model_names if model.lower() == self.ollama_model.lower()), None)
+            if exact_match:
+                self.ollama_model = exact_match  # Use exact case from server
+                logger.info(f"Using exact model match: {self.ollama_model}")
+                return True
+                
+            # Use first compatible model
+            compatible_models = [model for model in model_names if model.lower().startswith(base_model.lower())]
+            if compatible_models:
+                self.ollama_model = compatible_models[0]
+                logger.info(f"Using compatible model: {self.ollama_model}")
+                return True
+                
             return True
+            
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to connect to Ollama server: {str(e)}")
             return False
     
     def _setup_ollama(self):
-        """Setup Ollama embedding and LLM with error handling"""
+        """Setup Ollama embedding and LLM with improved error handling"""
         try:
             # Setup embedding model
             self.embed_model = OllamaEmbedding(
@@ -106,11 +143,11 @@ class RAGEngine:
             # Important: Set the embedding model in Settings
             Settings.embed_model = self.embed_model
             
-            # Setup LLM
+            # Setup LLM with increased timeout
             self.llm = Ollama(
                 model=self.ollama_model, 
                 base_url=self.ollama_base_url,
-                request_timeout=120.0  # Increase timeout for longer responses
+                request_timeout=180.0  # Increased timeout for longer responses
             )
             
             # Important: Set the LLM model in Settings
@@ -118,8 +155,9 @@ class RAGEngine:
             
             logger.info(f"Successfully set up Ollama embedding and LLM using model: {self.ollama_model}")
         except Exception as e:
-            logger.error(f"Failed to setup Ollama models: {str(e)}")
-            raise RuntimeError(f"Failed to initialize Ollama models: {str(e)}")
+            logger.error(f"Failed to setup Ollama models: {str(e)}", exc_info=True)
+            logger.warning("Continuing without properly configured Ollama models")
+            # Don't raise an exception, allow the application to continue in degraded mode
     
     def _setup_prompts(self):
         """Setup prompt templates for query and refinement"""
@@ -127,7 +165,6 @@ class RAGEngine:
         text_qa_template_str = (
             "Context information is"
             " below.\n---------------------\n{context_str}\n---------------------\n"
-            "Chat history: \n{chat_history}\n"
             "Using both the context information and also using your own knowledge, answer"
             " the question: {query_str}\nIf the context isn't helpful, you can also"
             " answer the question on your own.\n"
@@ -158,7 +195,7 @@ class RAGEngine:
         self.refine_template = PromptTemplate(refine_template_str)
     
     def _load_index(self) -> bool:
-        """Attempt to load existing index from ChromaDB"""
+        """Attempt to load existing index from ChromaDB with improved error handling"""
         try:
             # Initialize ChromaDB client
             chroma_client = chromadb.PersistentClient(path=self.chroma_persist_dir)
@@ -189,17 +226,17 @@ class RAGEngine:
                 if "Collection not found" in str(e):
                     logger.info("No existing collection found in ChromaDB")
                 else:
-                    logger.error(f"Error accessing ChromaDB collection: {str(e)}")
+                    logger.error(f"Error accessing ChromaDB collection: {str(e)}", exc_info=True)
                 return False
             except Exception as e:
-                logger.error(f"Unexpected error loading collection: {str(e)}")
+                logger.error(f"Unexpected error loading collection: {str(e)}", exc_info=True)
                 return False
         except Exception as e:
-            logger.error(f"Error connecting to ChromaDB: {str(e)}")
+            logger.error(f"Error connecting to ChromaDB: {str(e)}", exc_info=True)
             return False
     
     def ingest_documents(self) -> Dict[str, Any]:
-        """Ingest documents and create index, storing in ChromaDB"""
+        """Ingest documents and create index, storing in ChromaDB with improved error handling"""
     
         logger.info(f"Ingesting documents from {self.document_dir}...")
         
@@ -228,7 +265,8 @@ class RAGEngine:
             except ValueError:
                 logger.info("No existing collection to delete")
             except Exception as e:
-                logger.error(f"Error deleting collection: {str(e)}")
+                logger.error(f"Error deleting collection: {str(e)}", exc_info=True)
+                logger.warning("Continuing despite collection deletion error")
             
             # Create new collection
             collection = chroma_client.create_collection("documents")
@@ -247,21 +285,25 @@ class RAGEngine:
             
             return {"status": "success", "document_count": len(documents)}
         except Exception as e:
-            logger.error(f"Error ingesting documents: {str(e)}")
-            raise  # Re-raise to allow the original error to be seen
+            logger.error(f"Error ingesting documents: {str(e)}", exc_info=True)
+            return {"status": "error", "message": f"Failed to ingest documents: {str(e)}"}
     
     def load_data(self) -> Dict[str, Any]:
         """
         Load index from ChromaDB if available, otherwise create new index.
         This provides backward compatibility with existing code.
         """
-        if self.index is None:
-            if not self._load_index():
-                return self.ingest_documents()
+        try:
+            if self.index is None:
+                if not self._load_index():
+                    return self.ingest_documents()
+                else:
+                    return {"status": "success", "message": "Loaded existing index"}
             else:
-                return {"status": "success", "message": "Loaded existing index"}
-        else:
-            return {"status": "success", "message": "Index already loaded"}
+                return {"status": "success", "message": "Index already loaded"}
+        except Exception as e:
+            logger.error(f"Error in load_data: {str(e)}", exc_info=True)
+            return {"status": "error", "message": f"Failed to load data: {str(e)}"}
     
     def create_chat_session(self) -> str:
         """Create a new chat session and return session ID"""
@@ -288,7 +330,7 @@ class RAGEngine:
                 logger.info(f"Cleared chat session: {session_id}")
                 return True
             except Exception as e:
-                logger.error(f"Error clearing chat session {session_id}: {str(e)}")
+                logger.error(f"Error clearing chat session {session_id}: {str(e)}", exc_info=True)
                 return False
         logger.warning(f"Attempted to clear non-existent session: {session_id}")
         return False
@@ -301,110 +343,198 @@ class RAGEngine:
                 logger.info(f"Deleted chat session: {session_id}")
                 return True
             except Exception as e:
-                logger.error(f"Error deleting chat session {session_id}: {str(e)}")
+                logger.error(f"Error deleting chat session {session_id}: {str(e)}", exc_info=True)
                 return False
         logger.warning(f"Attempted to delete non-existent session: {session_id}")
         return False
     
     def answer_question(self, question: str, session_id: Optional[str] = None) -> Dict[str, Any]:
-        """Answer a question using the RAG engine with optional chat history"""
-        if not self.index:
-            raise ValueError("Index not initialized. Call load_data() first.")
-        
-        # Use existing session or create a new one if not provided
-        memory = None
-        is_new_session = False
-        
-        if session_id:
-            if session_id not in self.chat_sessions:
-                # Create a new session with the provided ID
-                self.chat_sessions[session_id] = ChatMemoryBuffer.from_defaults(token_limit=2000)
-                is_new_session = True
-                logger.info(f"Created new chat session on-demand: {session_id}")
-            memory = self.chat_sessions[session_id]
-        
-        # Create query engine with templates and memory if available
-        query_engine = self.index.as_query_engine(
-            text_qa_template=self.text_qa_template,
-            refine_template=self.refine_template,
-            similarity_top_k=2,
-            chat_memory=memory,
-            llm=self.llm,  # Explicitly use the configured LLM
-            embed_model=self.embed_model  # Explicitly use the configured embedding model
-        )
-        
-        # Get response
+        """Answer a question using the RAG engine with optional chat history and improved error handling"""
         try:
-            response = query_engine.query(question)
-            logger.info(f"Generated response for question: {question[:50]}...")
-        except Exception as e:
-            logger.error(f"Error generating response: {str(e)}")
-            raise RuntimeError(f"Failed to generate response: {str(e)}")
-        
-        # Store the interaction in memory if available
-        if memory:
+            if not self.index:
+                try:
+                    # Attempt to load the index automatically
+                    load_result = self.load_data()
+                    if load_result.get("status") != "success":
+                        return {
+                            'question': question,
+                            'answer': f"I'm sorry, I couldn't access my knowledge base: {load_result.get('message', 'Unknown error')}",
+                            'raw_answer': f"Error: {load_result.get('message', 'Index not initialized')}",
+                            'sources': [],
+                            'session_id': session_id,
+                            'error': True
+                        }
+                except Exception as e:
+                    logger.error(f"Failed to load index: {str(e)}", exc_info=True)
+                    return {
+                        'question': question,
+                        'answer': "I'm sorry, I couldn't access my knowledge base. Please try again later or contact support.",
+                        'raw_answer': f"Error: Index not initialized and failed to load: {str(e)}",
+                        'sources': [],
+                        'session_id': session_id,
+                        'error': True
+                    }
+            
+            # Use existing session or create a new one if not provided
+            memory = None
+            is_new_session = False
+            
+            if session_id:
+                if session_id not in self.chat_sessions:
+                    # Create a new session with the provided ID
+                    try:
+                        self.chat_sessions[session_id] = ChatMemoryBuffer.from_defaults(token_limit=2000)
+                        is_new_session = True
+                        logger.info(f"Created new chat session on-demand: {session_id}")
+                    except Exception as e:
+                        logger.error(f"Error creating chat session: {str(e)}", exc_info=True)
+                        # Continue without memory rather than failing
+                memory = self.chat_sessions.get(session_id)
+            
+            # Create query engine with templates and memory if available
+            try:
+                # Get chat history as a string
+                chat_history = ""
+                if memory and hasattr(memory, 'get_chat_history'):
+                    chat_history_obj = memory.get_chat_history()
+                    if chat_history_obj and hasattr(chat_history_obj, 'messages'):
+                        # Format chat history as string
+                        history_msgs = []
+                        for msg in chat_history_obj.messages:
+                            role = getattr(msg, 'role', None) or getattr(msg, 'type', 'unknown')
+                            content = getattr(msg, 'content', '')
+                            history_msgs.append(f"{role}: {content}")
+                        
+                        chat_history = "\n".join(history_msgs)
+                
+                # Create a modified template with chat_history
+                current_qa_template = self.text_qa_template.template
+                if "{chat_history}" in current_qa_template:
+                    # Replace chat_history placeholder with actual history or empty string
+                    from copy import deepcopy
+                    modified_qa_template = deepcopy(self.text_qa_template)
+                    modified_qa_template.template = current_qa_template.replace("{chat_history}", chat_history)
+                else:
+                    modified_qa_template = self.text_qa_template
+                
+                # Create query engine with the modified template
+                query_engine = self.index.as_query_engine(
+                    text_qa_template=modified_qa_template,
+                    refine_template=self.refine_template,
+                    similarity_top_k=2,
+                    chat_memory=memory,
+                    llm=self.llm,  # Explicitly use the configured LLM
+                    embed_model=self.embed_model  # Explicitly use the configured embedding model
+                )
+                
+                # Get response
+                response = query_engine.query(question)
+                logger.info(f"Generated response for question: {question[:50]}...")
+            except Exception as e:
+                logger.error(f"Error generating response: {str(e)}", exc_info=True)
+                return {
+                    'question': question,
+                    'answer': f"I'm sorry, I encountered an error while processing your question. Please try again or rephrase your query.",
+                    'raw_answer': f"Error: {str(e)}",
+                    'sources': [],
+                    'session_id': session_id,
+                    'error': True
+                }
+            
+            # Store the interaction in memory if available
+            if memory:
+                try:
+                    if hasattr(response, 'response'):
+                        memory.put(question, response.response)
+                        if not is_new_session:
+                            logger.info(f"Updated chat memory for session: {session_id}")
+                except Exception as e:
+                    logger.error(f"Error updating chat memory: {str(e)}", exc_info=True)
+                    # Continue despite chat memory error
+            
+            # Format response with source information
+            source_documents = []
+            final_response = ""
+            
+            # More robust response handling
             try:
                 if hasattr(response, 'response'):
-                    memory.put(question, response.response)
-                    if not is_new_session:
-                        logger.info(f"Updated chat memory for session: {session_id}")
+                    final_response = response.response
+                elif hasattr(response, 'get_formatted_sources'):
+                    # Some llama_index versions may use different response structure
+                    final_response = str(response)
+                else:
+                    final_response = str(response)
+                    logger.warning(f"Response object has unexpected structure: {type(response)}")
             except Exception as e:
-                logger.error(f"Error updating chat memory: {str(e)}")
-        
-        # Format response with source information
-        source_documents = []
-        final_response = ""
-        
-        if hasattr(response, 'response'):
-            final_response = response.response
-        else:
-            final_response = str(response)
-            logger.warning("Response object has no 'response' attribute")
-        
-        if hasattr(response, 'source_nodes') and response.source_nodes:
-            source_nodes = response.source_nodes
+                logger.error(f"Error extracting response content: {str(e)}", exc_info=True)
+                final_response = "I found some information, but had trouble formatting it."
             
-            # Extract source documents for API response
-            for node in source_nodes:
-                metadata = {}
-                if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
-                    metadata = node.node.metadata
-                
-                source_doc = {
-                    'text': node.text[:200] + "..." if len(node.text) > 200 else node.text,
-                    'score': float(node.score) if hasattr(node, 'score') else None,
-                    'file_name': metadata.get('file_name', 'Unknown'),
-                }
-                
-                if 'page_label' in metadata:
-                    source_doc['page_label'] = metadata['page_label']
-                
-                source_documents.append(source_doc)
-            
-            # Add source citation to response
-            if source_nodes:
-                source_info = []
-                for i, node in enumerate(source_nodes[:2]):  # Only use first two sources
-                    if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
-                        metadata = node.node.metadata
-                        file_name = metadata.get('file_name', 'Unknown')
-                        page_label = metadata.get('page_label', '')
+            # Extract source information with improved error handling
+            try:
+                if hasattr(response, 'source_nodes') and response.source_nodes:
+                    source_nodes = response.source_nodes
+                    
+                    # Extract source documents for API response
+                    for node in source_nodes:
+                        try:
+                            metadata = {}
+                            if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
+                                metadata = node.node.metadata
+                            
+                            source_doc = {
+                                'text': node.text[:200] + "..." if len(node.text) > 200 else node.text,
+                                'score': float(node.score) if hasattr(node, 'score') else None,
+                                'file_name': metadata.get('file_name', 'Unknown'),
+                            }
+                            
+                            if 'page_label' in metadata:
+                                source_doc['page_label'] = metadata['page_label']
+                            
+                            source_documents.append(source_doc)
+                        except Exception as e:
+                            logger.error(f"Error processing source node: {str(e)}", exc_info=True)
+                    
+                    # Add source citation to response
+                    if source_nodes:
+                        source_info = []
+                        for i, node in enumerate(source_nodes[:2]):  # Only use first two sources
+                            try:
+                                if hasattr(node, 'node') and hasattr(node.node, 'metadata'):
+                                    metadata = node.node.metadata
+                                    file_name = metadata.get('file_name', 'Unknown')
+                                    page_label = metadata.get('page_label', '')
+                                    
+                                    if page_label:
+                                        source_info.append(f"{file_name} (page: {page_label})")
+                                    else:
+                                        source_info.append(file_name)
+                            except Exception as e:
+                                logger.error(f"Error formatting source info: {str(e)}", exc_info=True)
                         
-                        if page_label:
-                            source_info.append(f"{file_name} (page: {page_label})")
-                        else:
-                            source_info.append(file_name)
-                
-                if source_info:
-                    final_response += '\n\nSources: ' + ', '.join(source_info)
-        
-        # Format API response
-        result = {
-            'question': question,
-            'answer': final_response,
-            'raw_answer': final_response,
-            'sources': source_documents,
-            'session_id': session_id
-        }
-        
-        return result
+                        if source_info:
+                            final_response += '\n\nSources: ' + ', '.join(source_info)
+            except Exception as e:
+                logger.error(f"Error processing source nodes: {str(e)}", exc_info=True)
+                # Continue without source information rather than failing
+            
+            # Format API response
+            result = {
+                'question': question,
+                'answer': final_response,
+                'raw_answer': final_response,
+                'sources': source_documents,
+                'session_id': session_id
+            }
+            
+            return result
+        except Exception as e:
+            logger.error(f"Unexpected error in answer_question: {str(e)}", exc_info=True)
+            return {
+                'question': question,
+                'answer': "I apologize, but I encountered an unexpected error. Please try again later.",
+                'raw_answer': f"Unexpected error: {str(e)}",
+                'sources': [],
+                'session_id': session_id,
+                'error': True
+            }
