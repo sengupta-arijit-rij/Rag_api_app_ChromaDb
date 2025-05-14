@@ -1,13 +1,12 @@
-chromadb
-flask
-llama-index
-flask-cors
+llama-index==0.10.34
+llama-index-core==0.10.34
+llama-index-llms-ollama==0.1.2
+llama-index-embeddings-ollama==0.1.3
+llama-index-readers-web==0.*
+llama-index-vector-stores-chroma==0.1.*
+flask==2.3.*
+flask-cors==4.0.*
 python-dotenv
-llama-index
-llama-index-core
-llama-index-vector-stores-chroma
-llama-index-llms-ollama
-llama-index-readers-web
-llama-index-embeddings-ollama
+chromadb==0.5.0
 
 
