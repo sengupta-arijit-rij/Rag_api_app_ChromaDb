@@ -1,0 +1,123 @@
+@echo off
+REM launch_script.bat - Configure and launch RAG application with GPU support
+
+setlocal enabledelayedexpansion
+
+REM Script directory
+set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
+
+REM Load environment variables
+if exist .env (
+    echo Loading environment from .env file
+    for /f "tokens=*" %%a in (.env) do (
+        set "line=%%a"
+        if not "!line:~0,1!"=="#" (
+            set "!line!"
+        )
+    )
+) else (
+    echo Warning: .env file not found, using defaults
+)
+
+REM Function equivalent to check GPU
+echo Checking GPU availability...
+nvidia-smi >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo NVIDIA GPU detected:
+    nvidia-smi
+    set "CUDA_VISIBLE_DEVICES=0"
+) else (
+    echo Warning: nvidia-smi not found, GPU may not be available
+)
+
+REM Check if Ollama is running
+echo Checking if Ollama is running...
+set "OLLAMA_RUNNING=false"
+set "OLLAMA_BASE_URL=http://localhost:11434"
+if defined OLLAMA_BASE_URL set "OLLAMA_URL=%OLLAMA_BASE_URL%"
+if not defined OLLAMA_URL set "OLLAMA_URL=http://localhost:11434"
+
+curl -s "%OLLAMA_URL%/api/tags" >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    set "OLLAMA_RUNNING=true"
+    echo Ollama is running at %OLLAMA_URL%
+)
+
+if "%OLLAMA_RUNNING%"=="false" (
+    echo Warning: Ollama does not appear to be running. Start it with:
+    echo   set OLLAMA_NUM_GPU=1 ^& ollama serve
+    
+    set /p "REPLY=Do you want to try starting Ollama with GPU support now? (y/n) "
+    if /i "!REPLY!"=="y" (
+        echo Starting Ollama with GPU support...
+        start "Ollama Server" cmd /c "set OLLAMA_NUM_GPU=1 & ollama serve"
+        echo Ollama started in a new window.
+        timeout /t 3 >nul
+    )
+)
+
+REM Verify GPU setup
+echo Verifying GPU setup...
+if exist "verify_gpu.py" (
+    python verify_gpu.py 2>nul || echo GPU verification completed with warnings
+) else (
+    echo Warning: verify_gpu.py not found, skipping verification
+)
+
+REM Set environment variables for GPU
+set "OLLAMA_NUM_GPU=1"
+set "CUDA_VISIBLE_DEVICES=0"
+
+REM Print configuration
+echo.
+echo === RAG Application Configuration ===
+if defined OLLAMA_BASE_URL (
+    echo Ollama URL: %OLLAMA_BASE_URL%
+) else (
+    echo Ollama URL: http://localhost:11434
+)
+
+if defined OLLAMA_MODEL (
+    echo Ollama Model: %OLLAMA_MODEL%
+) else (
+    echo Ollama Model: llama3:latest
+)
+
+echo GPU Settings: OLLAMA_NUM_GPU=%OLLAMA_NUM_GPU%, CUDA_VISIBLE_DEVICES=%CUDA_VISIBLE_DEVICES%
+
+if defined PORT (
+    echo Port: %PORT%
+) else (
+    echo Port: 5001
+)
+
+if defined DEBUG (
+    echo Debug: %DEBUG%
+) else (
+    echo Debug: False
+)
+
+if defined CHROMA_PERSIST_DIR (
+    echo Vector Store: %CHROMA_PERSIST_DIR%
+) else (
+    echo Vector Store: ./chroma_db
+)
+
+if defined DOCUMENT_DIR (
+    echo Document Dir: %DOCUMENT_DIR%
+) else (
+    echo Document Dir: ./DocumentDir
+)
+
+echo ======================================
+echo.
+
+REM Launch application
+echo Starting RAG application with GPU acceleration...
+python app.py
+
+REM If we get here, the application has stopped
+echo RAG application has stopped.
+
+endlocal
