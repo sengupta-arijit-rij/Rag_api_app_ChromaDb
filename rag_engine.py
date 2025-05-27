@@ -137,7 +137,10 @@ class RAGEngine:
                 model_name=self.ollama_model,
                 base_url=self.ollama_base_url,
                 embed_batch_size=10,  # Reduce batch size for stability
-                ollama_additional_kwargs={"mirostat": 0},
+                ollama_additional_kwargs={
+                    "mirostat": 0,
+                    "temperature": 1
+                },
             )
             
             # Important: Set the embedding model in Settings
@@ -147,8 +150,8 @@ class RAGEngine:
             self.llm = Ollama(
                 model=self.ollama_model, 
                 base_url=self.ollama_base_url,
-                request_timeout=180.0  # Increased timeout for longer responses
-            )
+                request_timeout=180.0,  # Increased timeout for longer responses
+                )
             
             # Important: Set the LLM model in Settings
             Settings.llm = self.llm
@@ -166,31 +169,27 @@ class RAGEngine:
             "Context information is"
             " below.\n---------------------\n{context_str}\n---------------------\n"
             "Using both the context information and also using your own knowledge, answer"
-            " the question: {query_str}\nIf the context isn't helpful, you can also"
-            " answer the question on your own.\n"
+            " the question: {query_str}\n you can also"
+            " answer the question on your own using the knowledge you are trained on.\n"
             " answer using facts but keep it clean and concise so that everyone can understand clearly"
             " ensure you understand the users query and ask follow up questions if required"
-            " format the response and ensure it is presentable"
-            " Create table structure where needed in the response"
+            " format the response and ensure it is presentable as per corporate standards"
+            " elaborate each point but if user restricts number of words stick to it"
             " Be conversational and maintain continuity with previous messages"
+            " Ensure there are no special characters in the response that is sent back"
+            " Characters like * should not be there"
         )
         self.text_qa_template = PromptTemplate(text_qa_template_str)
         
         # Refine template
         refine_template_str = (
-            " You are a senior subject matter expert in the banking and finance domain"
-            " your speciality is payments. The queries you will get will be related to payments"
-            " Your users will be software developers, testers, product owners"
-            " Users will need help with Acceptance Criteria Generation"
-            " Test Design, Code review etc. Keeping the context in mind answer the question"
-            " The original question is as follows:\n {query_str} \n We have provided an"
-            " existing answer: {existing_answer}\n We have the opportunity to refine"
-            " the existing answer meeting the corporate standards with some more context"
-            " \n------------\n{context_msg}\n------------\n Using both the new"
-            " context and your own knowledge, update or repeat the existing answer.\n"
+            " Original question: {query_str}\n"
+            " Existing answer: {existing_answer}\n"
+            " New context:{context_msg}\n"
+            " Using both the new context and your own knowledge, provide a concise final answer.\n"
+            " Prioritize the context but dont ignore your training"
             " ensure there is enough space above and below the query to maintain proper document format"
-            " Be precise with the answer and ensure answer is in tabular format where needed"
-            " Be conversational and maintain continuity with previous messages"
+            " special Characters like *, /, /N, # etc  should not be there in the final response"
         )
         self.refine_template = PromptTemplate(refine_template_str)
     
